@@ -12,6 +12,9 @@ const { connectDb } = require('../utils/db');
 const ModuleLoader = require('./module-loader');
 const { useMongoAuthState } = require('../utils/mongoAuthState');
 
+
+const msgRetryCounterCache = new NodeCache();
+
 class HyperWaBot {
     constructor() {
         this.sock = null;
@@ -24,22 +27,19 @@ class HyperWaBot {
         this.qrCodeSent = false;
         this.useMongoAuth = config.get('auth.useMongoAuth', false);
         
-        // External map to store retry counts of messages when decryption/encryption fails
-        // Keep this out of the socket itself, so as to prevent a message decryption/encryption loop across socket restarts
-        this.msgRetryCounterCache = new NodeCache({
-            stdTTL: 300,
-            maxKeys: 500
-        });
-        
-        // On-demand map for message history
-        this.onDemandMap = new Map();
+        // Simple message store for getMessage implementation (like official example)
+        this.messageStore = new Map();
         
         // Simple memory cleanup
         setInterval(() => {
-            if (this.onDemandMap.size > 100) {
-                this.onDemandMap.clear();
+            if (this.messageStore.size > 1000) {
+                const entries = Array.from(this.messageStore.entries());
+                const toKeep = entries.slice(-500); // Keep last 500
+                this.messageStore.clear();
+                toKeep.forEach(([key, value]) => this.messageStore.set(key, value));
+                logger.debug('🧹 Message store cleaned up');
             }
-        }, 300000);
+        }, 300000); // Every 5 minutes
     }
 
     async initialize() {
@@ -116,112 +116,178 @@ class HyperWaBot {
                     /** caching makes the store faster to send/recv messages */
                     keys: makeCacheableSignalKeyStore(state.keys, logger.child({ module: 'signal-keys' })),
                 },
-                msgRetryCounterCache: this.msgRetryCounterCache,
+                msgRetryCounterCache, 
                 generateHighQualityLinkPreview: true,
-                // ignore all broadcast messages -- to receive the same
-                // comment the line below out
-                // shouldIgnoreJid: jid => isJidBroadcast(jid),
-                // implement to handle retries & poll updates
                 getMessage: this.getMessage.bind(this),
                 browser: ['HyperWa', 'Chrome', '3.0'],
-                // Enable message history for better message retrieval
-                syncFullHistory: false,
-                markOnlineOnConnect: true,
-                // Add firewall bypass
-                firewall: false
             });
 
             // The process function lets you process all events that just occurred efficiently in a batch
             this.sock.ev.process(async (events) => {
-                try {
-                    // Something about the connection changed
-                    if (events['connection.update']) {
-                        await this.handleConnectionUpdate(events['connection.update']);
-                    }
+                if (events['connection.update']) {
+                    const update = events['connection.update'];
+                    const { connection, lastDisconnect, qr } = update;
 
-                    // Credentials updated -- save them
-                    if (events['creds.update']) {
-                        await saveCreds();
-                    }
+                    if (qr) {
+                        logger.info('📱 WhatsApp QR code generated');
+                        qrcode.generate(qr, { small: true });
 
-                    if (events['labels.association']) {
-                        logger.info('📋 Label association update:', events['labels.association']);
-                    }
-
-                    if (events['labels.edit']) {
-                        logger.info('📝 Label edit update:', events['labels.edit']);
-                    }
-
-                    if (events.call) {
-                        logger.info('📞 Call event received:', events.call);
-                    }
-
-                    // History received
-                    if (events['messaging-history.set']) {
-                        const { chats, contacts, messages, isLatest, progress, syncType } = events['messaging-history.set'];
-                        if (syncType === proto.HistorySync.HistorySyncType.ON_DEMAND) {
-                            logger.info('📥 Received on-demand history sync, messages:', messages.length);
+                        if (this.telegramBridge) {
+                            try {
+                                await this.telegramBridge.sendQRCode(qr);
+                            } catch (error) {
+                                logger.warn('⚠️ TelegramBridge failed to send QR:', error.message);
+                            }
                         }
-                        logger.info(`📊 History sync: ${chats.length} chats, ${contacts.length} contacts, ${messages.length} msgs (latest: ${isLatest}, progress: ${progress}%)`);
                     }
 
-                    // Received a new message
-                    if (events['messages.upsert']) {
-                        await this.handleMessagesUpsert(events['messages.upsert']);
+                    if (connection === 'close') {
+                        // reconnect if not logged out
+                        if ((lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut) {
+                            if (!this.isShuttingDown) {
+                                logger.warn('🔄 Connection closed, reconnecting...');
+                                this.startSock();
+                            }
+                        } else {
+                            logger.error('❌ Connection closed permanently. Please delete auth_info and restart.');
+
+                            if (this.useMongoAuth) {
+                                try {
+                                    const db = await connectDb();
+                                    const coll = db.collection("auth");
+                                    await coll.deleteOne({ _id: "session" });
+                                    logger.info('🗑️ MongoDB auth session cleared');
+                                } catch (error) {
+                                    logger.error('❌ Failed to clear MongoDB auth session:', error);
+                                }
+                            }
+
+                            process.exit(1);
+                        }
+                    } else if (connection === 'open') {
+                        await this.onConnectionOpen();
                     }
 
-                    // Messages updated like status delivered, message deleted etc.
-                    if (events['messages.update']) {
-                        logger.debug('Messages update:', JSON.stringify(events['messages.update'], undefined, 2));
+                    logger.info('Connection update:', update);
+                }
 
-                        for (const { key, update } of events['messages.update']) {
-                            if (update.pollUpdates) {
-                                const pollCreation = {}; // get the poll creation message somehow
-                                if (pollCreation) {
-                                    logger.info('📊 Poll update received, aggregation:', 
-                                        getAggregateVotesInPollMessage({
-                                            message: pollCreation,
-                                            pollUpdates: update.pollUpdates,
-                                        })
-                                    );
+                // Credentials updated -- save them
+                if (events['creds.update']) {
+                    await saveCreds();
+                }
+
+                if (events['labels.association']) {
+                    logger.info('📋 Label association update:', events['labels.association']);
+                }
+
+                if (events['labels.edit']) {
+                    logger.info('📝 Label edit update:', events['labels.edit']);
+                }
+
+                if (events.call) {
+                    logger.info('📞 Call event received:', events.call);
+                }
+
+                // History received
+                if (events['messaging-history.set']) {
+                    const { chats, contacts, messages, isLatest, progress, syncType } = events['messaging-history.set'];
+                    if (syncType === proto.HistorySync.HistorySyncType.ON_DEMAND) {
+                        logger.info('📥 Received on-demand history sync, messages:', messages.length);
+                    }
+                    logger.info(`📊 History sync: ${chats.length} chats, ${contacts.length} contacts, ${messages.length} msgs (latest: ${isLatest}, progress: ${progress}%)`);
+                }
+
+                // Received a new message
+                if (events['messages.upsert']) {
+                    const upsert = events['messages.upsert'];
+                    logger.debug('Received messages:', JSON.stringify(upsert, undefined, 2));
+
+                    if (!!upsert.requestId) {
+                        logger.info("📥 Placeholder message received for request of id=" + upsert.requestId, upsert);
+                    }
+
+                    // Store messages for getMessage function (CRITICAL FOR DECRYPTION)
+                    for (const msg of upsert.messages) {
+                        if (msg.key?.id && msg.message) {
+                            this.messageStore.set(msg.key.id, msg.message);
+                        }
+                    }
+
+                    if (upsert.type === 'notify') {
+                        for (const msg of upsert.messages) {
+                            if (msg.message?.conversation || msg.message?.extendedTextMessage?.text) {
+                                const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text;
+                                
+                                if (text == "requestPlaceholder" && !upsert.requestId) {
+                                    const messageId = await this.sock.requestPlaceholderResend(msg.key);
+                                    logger.info('🔄 Requested placeholder resync, ID:', messageId);
+                                }
+
+                                // Go to an old chat and send this
+                                if (text == "onDemandHistSync") {
+                                    const messageId = await this.sock.fetchMessageHistory(50, msg.key, msg.messageTimestamp);
+                                    logger.info('📥 Requested on-demand sync, ID:', messageId);
                                 }
                             }
                         }
                     }
 
-                    if (events['message-receipt.update']) {
-                        logger.debug('📨 Message receipt update:', events['message-receipt.update']);
+                    // Pass to original message handler
+                    try {
+                        await this.messageHandler.handleMessages({ messages: upsert.messages, type: upsert.type });
+                    } catch (error) {
+                        logger.warn('⚠️ Message handler error:', error.message);
                     }
+                }
 
-                    if (events['messages.reaction']) {
-                        logger.info('😀 Message reactions:', events['messages.reaction']);
-                    }
+                // Messages updated like status delivered, message deleted etc.
+                if (events['messages.update']) {
+                    logger.debug('Messages update:', JSON.stringify(events['messages.update'], undefined, 2));
 
-                    if (events['presence.update']) {
-                        logger.debug('👤 Presence update:', events['presence.update']);
-                    }
-
-                    if (events['chats.update']) {
-                        logger.debug('💬 Chats updated:', events['chats.update']);
-                    }
-
-                    if (events['contacts.update']) {
-                        for (const contact of events['contacts.update']) {
-                            if (typeof contact.imgUrl !== 'undefined') {
-                                const newUrl = contact.imgUrl === null
-                                    ? null
-                                    : await this.sock.profilePictureUrl(contact.id).catch(() => null);
-                                logger.info(`👤 Contact ${contact.id} has a new profile pic: ${newUrl}`);
+                    for (const { key, update } of events['messages.update']) {
+                        if (update.pollUpdates) {
+                            const pollCreation = this.messageStore.get(key.id); // Get from our store
+                            if (pollCreation) {
+                                logger.info('📊 Poll update received, aggregation:', 
+                                    getAggregateVotesInPollMessage({
+                                        message: { message: pollCreation },
+                                        pollUpdates: update.pollUpdates,
+                                    })
+                                );
                             }
                         }
                     }
+                }
 
-                    if (events['chats.delete']) {
-                        logger.info('🗑️ Chats deleted:', events['chats.delete']);
+                if (events['message-receipt.update']) {
+                    logger.debug('📨 Message receipt update:', events['message-receipt.update']);
+                }
+
+                if (events['messages.reaction']) {
+                    logger.info('😀 Message reactions:', events['messages.reaction']);
+                }
+
+                if (events['presence.update']) {
+                    logger.debug('👤 Presence update:', events['presence.update']);
+                }
+
+                if (events['chats.update']) {
+                    logger.debug('💬 Chats updated:', events['chats.update']);
+                }
+
+                if (events['contacts.update']) {
+                    for (const contact of events['contacts.update']) {
+                        if (typeof contact.imgUrl !== 'undefined') {
+                            const newUrl = contact.imgUrl === null
+                                ? null
+                                : await this.sock.profilePictureUrl(contact.id).catch(() => null);
+                            logger.info(`👤 Contact ${contact.id} has a new profile pic: ${newUrl}`);
+                        }
                     }
+                }
 
-                } catch (error) {
-                    logger.warn('⚠️ Event processing error:', error.message);
+                if (events['chats.delete']) {
+                    logger.info('🗑️ Chats deleted:', events['chats.delete']);
                 }
             });
 
@@ -232,98 +298,28 @@ class HyperWaBot {
         }
     }
 
-    async handleConnectionUpdate(update) {
-        const { connection, lastDisconnect, qr } = update;
-
-        if (qr) {
-            logger.info('📱 WhatsApp QR code generated');
-            qrcode.generate(qr, { small: true });
-
-            if (this.telegramBridge) {
-                try {
-                    await this.telegramBridge.sendQRCode(qr);
-                } catch (error) {
-                    logger.warn('⚠️ TelegramBridge failed to send QR:', error.message);
-                }
-            }
-        }
-
-        if (connection === 'close') {
-            // Reconnect if not logged out
-            if ((lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut) {
-                if (!this.isShuttingDown) {
-                    logger.warn('🔄 Connection closed, reconnecting...');
-                    setTimeout(() => this.startSock(), 5000);
-                }
-            } else {
-                logger.error('❌ Connection closed permanently. Please delete auth_info and restart.');
-
-                if (this.useMongoAuth) {
-                    try {
-                        const db = await connectDb();
-                        const coll = db.collection("auth");
-                        await coll.deleteOne({ _id: "session" });
-                        logger.info('🗑️ MongoDB auth session cleared');
-                    } catch (error) {
-                        logger.error('❌ Failed to clear MongoDB auth session:', error);
-                    }
-                }
-
-                process.exit(1);
-            }
-        } else if (connection === 'open') {
-            await this.onConnectionOpen();
-        }
-
-        logger.info('Connection update:', update);
-    }
-
-    async handleMessagesUpsert(upsert) {
-        logger.debug('Received messages:', JSON.stringify(upsert, undefined, 2));
-
-        if (!!upsert.requestId) {
-            logger.info("📥 Placeholder message received for request of id=" + upsert.requestId, upsert);
-        }
-
-        if (upsert.type === 'notify') {
-            for (const msg of upsert.messages) {
-                try {
-                    await this.processIncomingMessage(msg, upsert);
-                } catch (error) {
-                    logger.warn('⚠️ Message processing error:', error.message);
-                }
-            }
-        }
-
+    // Simple getMessage
+    async getMessage(key) {
         try {
-            await this.messageHandler.handleMessages({ messages: upsert.messages, type: upsert.type });
+            // Check if we have the message stored
+            if (key.id && this.messageStore.has(key.id)) {
+                return this.messageStore.get(key.id);
+            }
+            
+            // Return undefined to let Baileys handle it naturally
+            return undefined;
+            
         } catch (error) {
-            logger.warn('⚠️ Original message handler error:', error.message);
-        }
-    }
-
-    async processIncomingMessage(msg, upsert) {
-        const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text;
-        
-        if (text) {
-            // Handle special commands
-            if (text === "requestPlaceholder" && !upsert.requestId) {
-                const messageId = await this.sock.requestPlaceholderResend(msg.key);
-                logger.info('🔄 Requested placeholder resync, ID:', messageId);
-                return;
-            }
-
-            // Go to an old chat and send this
-            if (text === "onDemandHistSync") {
-                const messageId = await this.sock.fetchMessageHistory(50, msg.key, msg.messageTimestamp);
-                logger.info('📥 Requested on-demand sync, ID:', messageId);
-                return;
-            }
+            logger.warn('⚠️ Error in getMessage:', error.message);
+            return undefined;
         }
     }
 
     async onConnectionOpen() {
         logger.info(`✅ Connected to WhatsApp! User: ${this.sock.user?.id || 'Unknown'}`);
+
+        // Clear message store on successful connection
+        this.messageStore.clear();
 
         if (!config.get('bot.owner') && this.sock.user) {
             config.set('bot.owner', this.sock.user.id);
@@ -374,23 +370,6 @@ class HyperWaBot {
         }
     }
 
-    // Fixed getMessage method - this was causing the "test" messages
-    async getMessage(key) {
-        try {
-            // First try to get from onDemandMap
-            if (this.onDemandMap.has(key.id)) {
-                return this.onDemandMap.get(key.id);
-            }
-            
-            // Return undefined instead of a test message
-            // This allows Baileys to handle message retrieval properly
-            return undefined;
-        } catch (error) {
-            logger.warn('⚠️ Error retrieving message:', error.message);
-            return undefined;
-        }
-    }
-
     async connect() {
         if (!this.sock) {
             await this.startSock();
@@ -409,6 +388,9 @@ class HyperWaBot {
     async shutdown() {
         logger.info('🛑 Shutting down HyperWa Userbot...');
         this.isShuttingDown = true;
+
+        // Clear message store
+        this.messageStore.clear();
 
         if (this.telegramBridge) {
             try {
