@@ -35,26 +35,12 @@ class FileInfoModule {
                     errorText: '❌ *Media Analysis Failed*'
                 },
                 execute: this.getMediaInfo.bind(this)
-            },
-            {
-                name: 'hash',
-                description: 'Get file hash (MD5, SHA256)',
-                usage: '.hash (reply to file)',
-                permissions: 'public',
-                ui: {
-                    processingText: '🔐 *Calculating Hash...*\n\n⏳ Computing file checksums...',
-                    errorText: '❌ *Hash Calculation Failed*'
-                },
-                execute: this.getFileHash.bind(this)
             }
         ];
         this.tempDir = path.join(__dirname, '../temp');
     }
 
-    async init() {
-        await fs.ensureDir(this.tempDir);
-        console.log('✅ File info module initialized');
-    }
+
 
     async getFileInfo(msg, params, context) {
         const quotedMsg = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
@@ -186,50 +172,7 @@ class FileInfoModule {
         }
     }
 
-    async getFileHash(msg, params, context) {
-        const quotedMsg = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
-        
-        if (!quotedMsg) {
-            return '❌ *File Hash*\n\nPlease reply to any file to calculate its hash.\n\n💡 Usage: Reply to a file and type `.hash`';
-        }
-
-        try {
-            const mediaInfo = this.extractMediaInfo(quotedMsg);
-            
-            if (!mediaInfo) {
-                return '❌ *No File Found*\n\nThe replied message doesn\'t contain any files.';
-            }
-
-            // Download file
-            const stream = await downloadContentFromMessage(quotedMsg[`${mediaInfo.type}Message`], mediaInfo.type);
-            const chunks = [];
-            for await (const chunk of stream) {
-                chunks.push(chunk);
-            }
-            const buffer = Buffer.concat(chunks);
-
-            // Calculate hashes
-            const crypto = require('crypto');
-            const md5Hash = crypto.createHash('md5').update(buffer).digest('hex');
-            const sha256Hash = crypto.createHash('sha256').update(buffer).digest('hex');
-            const sha1Hash = crypto.createHash('sha1').update(buffer).digest('hex');
-
-            let hashText = `🔐 *File Hash Information*\n\n`;
-            hashText += `📄 **File Type:** ${mediaInfo.type}\n`;
-            hashText += `📏 **Size:** ${this.formatFileSize(buffer.length)}\n\n`;
-            hashText += `**Hash Values:**\n`;
-            hashText += `🔸 **MD5:** \`${md5Hash}\`\n`;
-            hashText += `🔸 **SHA1:** \`${sha1Hash}\`\n`;
-            hashText += `🔸 **SHA256:** \`${sha256Hash}\`\n\n`;
-            hashText += `💡 These hashes can be used to verify file integrity\n`;
-            hashText += `⏰ Calculated at ${new Date().toLocaleTimeString()}`;
-
-            return hashText;
-
-        } catch (error) {
-            throw new Error(`Hash calculation failed: ${error.message}`);
-        }
-    }
+   
 
     extractMediaInfo(quotedMsg) {
         if (quotedMsg.imageMessage) {
@@ -301,10 +244,6 @@ class FileInfoModule {
         return extensions[mimetype] || 'bin';
     }
 
-    async destroy() {
-        await fs.remove(this.tempDir);
-        console.log('🛑 File info module destroyed');
-    }
 }
 
 module.exports = FileInfoModule;
