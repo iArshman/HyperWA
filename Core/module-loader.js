@@ -20,12 +20,13 @@ class ModuleLoader {
         const loadModuleCommand = {
             name: 'lm',
             description: 'Load a module from file',
-            usage: '.lm (reply to a .js file)',
+            usage: '.lm (reply to a .js or .mjs file)',
             permissions: 'owner',
             execute: async (msg, params, context) => {
-                if (!msg.message?.documentMessage?.fileName?.endsWith('.js')) {
+                const fileName = msg.message?.documentMessage?.fileName;
+                if (!fileName || (!fileName.endsWith('.js') && !fileName.endsWith('.mjs'))) {
                     return context.bot.sendMessage(context.sender, {
-                        text: '🔧 *Load Module*\n\n❌ Please reply to a JavaScript (.js) file to load it as a module.'
+                        text: '🔧 *Load Module*\n\n❌ Please reply to a JavaScript (.js or .mjs) file to load it as a module.'
                     });
                 }
 
@@ -103,43 +104,6 @@ class ModuleLoader {
             }
         };
 
-        // Reload Module Command
-        const reloadModuleCommand = {
-            name: 'rlm',
-            description: 'Reload a module',
-            usage: '.rlm <module_name>',
-            permissions: 'owner',
-            execute: async (msg, params, context) => {
-                if (params.length === 0) {
-                    const moduleList = this.listModules().join('\n• ');
-                    return context.bot.sendMessage(context.sender, {
-                        text: `🔧 *Reload Module*\n\n📋 Available modules:\n• ${moduleList}\n\n💡 Usage: \`.rlm <module_name>\``
-                    });
-                }
-
-                const moduleName = params[0];
-                
-                try {
-                    const processingMsg = await context.bot.sendMessage(context.sender, {
-                        text: `⚡ *Reloading Module*\n\n🔄 Restarting: \`${moduleName}\`\n⏳ Please wait...`
-                    });
-
-                    await this.reloadModule(moduleName);
-                    
-                    await context.bot.sock.sendMessage(context.sender, {
-                        text: `✅ *Module Reloaded Successfully*\n\n📦 Module: \`${moduleName}\`\n🔄 Status: Restarted\n⏰ ${new Date().toLocaleTimeString()}`,
-                        edit: processingMsg.key
-                    });
-
-                } catch (error) {
-                    logger.error('Failed to reload module:', error);
-                    await context.bot.sendMessage(context.sender, {
-                        text: `❌ *Module Reload Failed*\n\n🚫 Error: ${error.message}\n📦 Module: \`${moduleName}\``
-                    });
-                }
-            }
-        };
-
         // List Modules Command
         const listModulesCommand = {
             name: 'modules',
@@ -182,7 +146,6 @@ class ModuleLoader {
         // Register module management commands
         this.bot.messageHandler.registerCommandHandler('lm', loadModuleCommand);
         this.bot.messageHandler.registerCommandHandler('ulm', unloadModuleCommand);
-        this.bot.messageHandler.registerCommandHandler('rlm', reloadModuleCommand);
         this.bot.messageHandler.registerCommandHandler('modules', listModulesCommand);
     }
 
@@ -440,6 +403,16 @@ const wrappedCmd = shouldWrap ? {
 
 
                     this.bot.messageHandler.registerCommandHandler(cmd.name, wrappedCmd);
+
+                    // Register aliases if they exist
+                    if (cmd.aliases && Array.isArray(cmd.aliases)) {
+                        for (const alias of cmd.aliases) {
+                            if (alias && typeof alias === 'string') {
+                                this.bot.messageHandler.registerCommandHandler(alias, wrappedCmd);
+                                logger.debug(`📝 Registered alias: ${alias} -> ${cmd.name}`);
+                            }
+                        }
+                    }
                 }
             }
             if (moduleInstance.messageHooks && typeof moduleInstance.messageHooks === 'object' && moduleInstance.messageHooks !== null) {
@@ -502,18 +475,6 @@ const wrappedCmd = shouldWrap ? {
         this.modules.delete(moduleId);
         delete require.cache[moduleInfo.path];
         logger.info(`🚫 Unloaded module: ${moduleId}`);
-    }
-
-    async reloadModule(moduleId) {
-        const moduleInfo = this.modules.get(moduleId);
-        if (!moduleInfo) {
-            throw new Error(`Module ${moduleId} not found for reloading`);
-        }
-        
-        logger.info(`🔄 Reloading module: ${moduleId}`);
-        await this.unloadModule(moduleId);
-        await this.loadModule(moduleInfo.path, moduleInfo.isSystem);
-        logger.info(`✅ Reloaded module: ${moduleId}`);
     }
 }
 
