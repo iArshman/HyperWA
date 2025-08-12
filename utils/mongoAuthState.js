@@ -11,11 +11,10 @@ async function useMongoAuthState() {
     const db = await connectDb();
     const coll = db.collection("auth");
 
-    // Step 1: Cleanup previous data
-    await fs.remove(AUTH_DIR);
-    await fs.remove(AUTH_TAR);
+    // Ensure local auth directory exists
+    await fs.ensureDir(AUTH_DIR);
 
-    // Step 2: Restore session from DB if it exists
+    // Restore session from MongoDB
     const session = await coll.findOne({ _id: "session" });
     const archiveBuffer = session?.archive?.buffer || session?.archive;
 
@@ -25,32 +24,32 @@ async function useMongoAuthState() {
             await tar.x({ file: AUTH_TAR, C: ".", strict: true });
 
             const credsPath = path.join(AUTH_DIR, "creds.json");
-            const credsExists = await fs.pathExists(credsPath);
-
-            if (credsExists) {
+            if (await fs.pathExists(credsPath)) {
                 console.log("✅ Session restored successfully from MongoDB.");
             } else {
-                console.warn("⚠️ Session archive extracted but creds.json missing. Deleting session.");
+                console.warn("⚠️ Session archive extracted but creds.json missing. Clearing session.");
                 await coll.deleteOne({ _id: "session" });
-                await fs.remove(AUTH_DIR);
+                await fs.emptyDir(AUTH_DIR);
             }
         } catch (err) {
             console.error("❌ Failed to restore session from MongoDB:", err);
             await coll.deleteOne({ _id: "session" });
-            await fs.remove(AUTH_DIR);
+            await fs.emptyDir(AUTH_DIR);
         } finally {
             await fs.remove(AUTH_TAR);
         }
     } else {
-        console.log("ℹ️ No existing session found. A new QR code will be generated.");
+        console.log("ℹ️ No existing session found in DB. A new QR/pairing code will be generated.");
     }
 
-    // Step 3: Generate multi-file auth state
+    // Generate Baileys multi-file auth state
     const { state, saveCreds: originalSaveCreds } = await useMultiFileAuthState(AUTH_DIR);
 
-    // Step 4: Save auth state back to MongoDB
+    // Save all auth files (including sessions) to MongoDB
     async function saveCreds() {
         await originalSaveCreds();
+
+        // Compress everything in auth_info (important for preserving sessions)
         await tar.c({ file: AUTH_TAR, cwd: ".", portable: true }, ["auth_info"]);
         const data = await fs.readFile(AUTH_TAR);
 
@@ -61,6 +60,7 @@ async function useMongoAuthState() {
         );
 
         await fs.remove(AUTH_TAR);
+        console.log("💾 Session saved to MongoDB.");
     }
 
     return { state, saveCreds };
