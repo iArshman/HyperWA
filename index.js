@@ -1,6 +1,8 @@
 const { HyperWaBot } = require('./Core/bot');
 const logger = require('./Core/logger');
 const config = require('./config');
+
+
 global.crypto = require('crypto');
 
 async function main() {
@@ -8,11 +10,11 @@ async function main() {
         logger.info('🚀 Starting HyperWa Userbot...');
         logger.info(`🎯 Version: ${config.get('bot.version')}`);
         logger.info(`🏢 Company: ${config.get('bot.company')}`);
-        
+
         const bot = new HyperWaBot();
         await bot.initialize();
-        
-        // Graceful shutdown handlers
+
+        // Graceful shutdown
         process.on('SIGINT', async () => {
             logger.info('🛑 Received SIGINT, shutting down gracefully...');
             await bot.shutdown();
@@ -25,23 +27,24 @@ async function main() {
             process.exit(0);
         });
 
+        // Better error logging
         process.on('uncaughtException', (error) => {
-            logger.error('💥 Uncaught Exception:', error);
+            logger.error({ err: error }, '💥 Uncaught Exception');
             process.exit(1);
         });
 
         process.on('unhandledRejection', (reason, promise) => {
-            logger.error('💥 Unhandled Rejection at:', promise, 'reason:', reason);
+            logger.error({ err: reason }, '💥 Unhandled Rejection at:', promise);
             process.exit(1);
         });
 
     } catch (error) {
-        logger.error('💥 Failed to start HyperWa Userbot:', error);
+        logger.error({ err: error }, '💥 Failed to start HyperWa Userbot');
         process.exit(1);
     }
 }
 
-// Display startup banner
+// Startup banner
 console.log(`
 ╔══════════════════════════════════════════════════════════════╗
 ║                                                              ║
