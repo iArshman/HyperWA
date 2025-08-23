@@ -1,4 +1,4 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, getAggregateVotesInPollMessage, isJidNewsletter, delay, proto, encodeWAM, BinaryInfo } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, getAggregateVotesInPollMessage, isJidNewsletter, delay, proto } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const qrcode = require('qrcode-terminal');
 const fs = require('fs-extra');
@@ -11,13 +11,13 @@ const MessageHandler = require('./message-handler');
 const { connectDb } = require('../utils/db');
 const ModuleLoader = require('./module-loader');
 const { useMongoAuthState } = require('../utils/mongoAuthState');
-const { makeInMemoryStore } = require('./store'); 
+const { makeInMemoryStore } = require('../utils/store');
 const msgRetryCounterCache = new NodeCache();
 
 class HyperWaBot {
     constructor() {
         this.sock = null;
-        this.store = makeInMemoryStore({ logger: logger.child({ module: 'store' }) }); 
+        this.store = makeInMemoryStore({ logger: logger.child({ module: 'store' }) });
         this.store.loadFromFile();
         this.authPath = './auth_info';
         this.messageHandler = new MessageHandler(this);
@@ -28,15 +28,21 @@ class HyperWaBot {
         this.qrCodeSent = false;
         this.useMongoAuth = config.get('auth.useMongoAuth', false);
         this.messageStore = new Map();
-        
-        // Simple memory cleanup
+
+
+        // Memory cleanup: keep messages < 10 mins old
         setInterval(() => {
-            if (this.messageStore.size > 1000) {
-                const entries = Array.from(this.messageStore.entries());
-                const toKeep = entries.slice(-500); // Keep last 500
-                this.messageStore.clear();
-                toKeep.forEach(([key, value]) => this.messageStore.set(key, value));
-                logger.debug('🧹 Message store cleaned up');
+            const now = Date.now();
+            let cleaned = 0;
+            for (const [id, message] of this.messageStore) {
+                const msgTime = (message.messageTimestamp || 0) * 1000;
+                if (now - msgTime > 10 * 60 * 1000) { // 10 minutes
+                    this.messageStore.delete(id);
+                    cleaned++;
+                }
+            }
+            if (cleaned > 0) {
+                logger.debug(`🧹 Message store cleaned: ${cleaned} old messages removed`);
             }
         }, 300000); // Every 5 minutes
     }
@@ -69,6 +75,7 @@ class HyperWaBot {
                 this.telegramBridge = null;
             }
         }
+
         await this.store.loadFromFile();
         await this.moduleLoader.loadModules();
         await this.startSock();
@@ -79,7 +86,7 @@ class HyperWaBot {
     async startSock() {
         let state, saveCreds;
 
-        // Clean up existing socket if present
+        // Clean up existing socket
         if (this.sock) {
             logger.info('🧹 Cleaning up existing WhatsApp socket');
             this.sock.ev.removeAllListeners();
@@ -87,7 +94,7 @@ class HyperWaBot {
             this.sock = null;
         }
 
-        // Choose auth method based on configuration
+        // Choose auth method
         if (this.useMongoAuth) {
             logger.info('🔧 Using MongoDB auth state...');
             try {
@@ -102,7 +109,10 @@ class HyperWaBot {
             ({ state, saveCreds } = await useMultiFileAuthState(this.authPath));
         }
 
-        // Fetch latest version of WA Web
+        // Wait for files to settle (critical for keys/)
+        await new Promise(resolve => setTimeout(resolve, 1000));
+
+        // Fetch latest WA version
         const { version, isLatest } = await fetchLatestBaileysVersion();
         logger.info(`📱 Using WA v${version.join('.')}, isLatest: ${isLatest}`);
 
@@ -112,24 +122,21 @@ class HyperWaBot {
                 logger: logger.child({ module: 'baileys' }),
                 auth: {
                     creds: state.creds,
-                    /** caching makes the store faster to send/recv messages */
                     keys: makeCacheableSignalKeyStore(state.keys, logger.child({ module: 'signal-keys' })),
                 },
-                msgRetryCounterCache, 
+                msgRetryCounterCache,
                 generateHighQualityLinkPreview: true,
                 getMessage: this.getMessage.bind(this),
                 browser: ['HyperWa', 'Chrome', '3.0'],
-                // Enable message history for better message retrieval
                 syncFullHistory: false,
                 markOnlineOnConnect: true,
-                // Add firewall bypass
-                firewall: false
+                firewall: false,
             });
 
-            // Bind store to socket events
+            // Bind store
             this.store.bind(this.sock.ev);
 
-            // The process function lets you process all events that just occurred efficiently in a batch
+            // Process events
             this.sock.ev.process(async (events) => {
                 if (events['connection.update']) {
                     const update = events['connection.update'];
@@ -156,8 +163,7 @@ class HyperWaBot {
                                 this.startSock();
                             }
                         } else {
-                            logger.error('❌ Connection closed permanently. Please delete auth_info and restart.');
-
+                            logger.error('❌ Connection closed permanently. Clearing session...');
                             if (this.useMongoAuth) {
                                 try {
                                     const db = await connectDb();
@@ -168,7 +174,6 @@ class HyperWaBot {
                                     logger.error('❌ Failed to clear MongoDB auth session:', error);
                                 }
                             }
-
                             process.exit(1);
                         }
                     } else if (connection === 'open') {
@@ -178,7 +183,7 @@ class HyperWaBot {
                     logger.info('Connection update:', update);
                 }
 
-                // Credentials updated -- save them
+
                 if (events['creds.update']) {
                     await saveCreds();
                 }
@@ -195,7 +200,6 @@ class HyperWaBot {
                     logger.info('📞 Call event received:', events.call);
                 }
 
-                // History received
                 if (events['messaging-history.set']) {
                     const { chats, contacts, messages, isLatest, progress, syncType } = events['messaging-history.set'];
                     if (syncType === proto.HistorySync.HistorySyncType.ON_DEMAND) {
@@ -204,16 +208,15 @@ class HyperWaBot {
                     logger.info(`📊 History sync: ${chats.length} chats, ${contacts.length} contacts, ${messages.length} msgs (latest: ${isLatest}, progress: ${progress}%)`);
                 }
 
-                // Received a new message
                 if (events['messages.upsert']) {
                     const upsert = events['messages.upsert'];
-                    logger.debug('Received messages:', JSON.stringify(upsert, undefined, 2));
+                    logger.debug('Received messages:', JSON.stringify(upsert, null, 2));
 
-                    if (!!upsert.requestId) {
-                        logger.info("📥 Placeholder message received for request of id=" + upsert.requestId, upsert);
+                    if (upsert.requestId) {
+                        logger.info(`📥 Placeholder message received for request ID: ${upsert.requestId}`);
                     }
 
-                    // Store messages for getMessage function (CRITICAL FOR DECRYPTION)
+                    // Store messages for decryption retries
                     for (const msg of upsert.messages) {
                         if (msg.key?.id && msg.message) {
                             this.messageStore.set(msg.key.id, msg.message);
@@ -222,24 +225,18 @@ class HyperWaBot {
 
                     if (upsert.type === 'notify') {
                         for (const msg of upsert.messages) {
-                            if (msg.message?.conversation || msg.message?.extendedTextMessage?.text) {
-                                const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text;
-                                
-                                if (text == "requestPlaceholder" && !upsert.requestId) {
-                                    const messageId = await this.sock.requestPlaceholderResend(msg.key);
-                                    logger.info('🔄 Requested placeholder resync, ID:', messageId);
-                                }
-
-                                // Go to an old chat and send this
-                                if (text == "onDemandHistSync") {
-                                    const messageId = await this.sock.fetchMessageHistory(50, msg.key, msg.messageTimestamp);
-                                    logger.info('📥 Requested on-demand sync, ID:', messageId);
-                                }
+                            const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text;
+                            if (text === "requestPlaceholder" && !upsert.requestId) {
+                                const messageId = await this.sock.requestPlaceholderResend(msg.key);
+                                logger.info('🔄 Requested placeholder resync, ID:', messageId);
+                            }
+                            if (text === "onDemandHistSync") {
+                                const messageId = await this.sock.fetchMessageHistory(50, msg.key, msg.messageTimestamp);
+                                logger.info('📥 Requested on-demand sync, ID:', messageId);
                             }
                         }
                     }
 
-                    // Pass to original message handler
                     try {
                         await this.messageHandler.handleMessages({ messages: upsert.messages, type: upsert.type });
                     } catch (error) {
@@ -247,13 +244,11 @@ class HyperWaBot {
                     }
                 }
 
-                // Messages updated like status delivered, message deleted etc.
                 if (events['messages.update']) {
-                    logger.debug('Messages update:', JSON.stringify(events['messages.update'], undefined, 2));
-
+                    logger.debug('Messages update:', JSON.stringify(events['messages.update'], null, 2));
                     for (const { key, update } of events['messages.update']) {
                         if (update.pollUpdates) {
-                            const pollCreation = this.messageStore.get(key.id); // Get from our store
+                            const pollCreation = this.messageStore.get(key.id);
                             if (pollCreation) {
                                 logger.info('📊 Poll update received, aggregation:', 
                                     getAggregateVotesInPollMessage({
@@ -300,28 +295,27 @@ class HyperWaBot {
 
         } catch (error) {
             logger.error('❌ Failed to initialize WhatsApp socket:', error);
-            logger.info('🔄 Retrying with new QR code...');
+            logger.info('🔄 Retrying in 5 seconds...');
             setTimeout(() => this.startSock(), 5000);
         }
     }
 
-    // Simple getMessage
+    // Reliable getMessage for decryption retries
     async getMessage(key) {
         try {
-            // Check if we have the message stored
             if (key.id && this.messageStore.has(key.id)) {
                 return this.messageStore.get(key.id);
             }
-            
-            // Try to load from store
+
             if (this.store) {
-                const msg = await this.store.loadMessage(key.remoteJid, key.id);
+                const msg = await Promise.race([
+                    this.store.loadMessage(key.remoteJid, key.id),
+                    new Promise(resolve => setTimeout(resolve, 2000)) // 2s timeout
+                ]);
                 return msg?.message;
             }
-            
-            // Return undefined to let Baileys handle it naturally
+
             return undefined;
-            
         } catch (error) {
             logger.warn('⚠️ Error in getMessage:', error.message);
             return undefined;
@@ -331,8 +325,6 @@ class HyperWaBot {
     async onConnectionOpen() {
         logger.info(`✅ Connected to WhatsApp! User: ${this.sock.user?.id || 'Unknown'}`);
 
-        // Clear message store on successful connection
-        this.messageStore.clear();
 
         if (!config.get('bot.owner') && this.sock.user) {
             config.set('bot.owner', this.sock.user.id);
@@ -362,8 +354,6 @@ class HyperWaBot {
         const owner = config.get('bot.owner');
         if (!owner) return;
 
-        const authMethod = this.useMongoAuth ? 'MongoDB' : 'File-based';
-        
         const startupMessage = `🚀 *${config.get('bot.name')} v${config.get('bot.version')}* is now online!\n\n` +
                               `🔥 *HyperWa Features Active:*\n` +
                               `• 🤖 Telegram Bridge: ${config.get('telegram.enabled') ? '✅' : '❌'}\n` +
@@ -372,7 +362,9 @@ class HyperWaBot {
 
         try {
             await this.sendMessage(owner, { text: startupMessage });
-        } catch {}
+        } catch (err) {
+            logger.warn('⚠️ Failed to send startup message:', err.message);
+        }
 
         if (this.telegramBridge) {
             try {
@@ -394,16 +386,12 @@ class HyperWaBot {
         if (!this.sock) {
             throw new Error('WhatsApp socket not initialized');
         }
-        
         return await this.sock.sendMessage(jid, content);
     }
 
     async shutdown() {
         logger.info('🛑 Shutting down HyperWa Userbot...');
         this.isShuttingDown = true;
-
-        // Clear message store
-        this.messageStore.clear();
 
         if (this.telegramBridge) {
             try {
@@ -416,6 +404,7 @@ class HyperWaBot {
         if (this.sock) {
             await this.sock.end();
         }
+
 
         logger.info('✅ HyperWa Userbot shutdown complete');
     }
