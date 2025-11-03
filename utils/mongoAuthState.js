@@ -1,82 +1,150 @@
-const { useMultiFileAuthState } = require("@whiskeysockets/baileys");
-const fs = require("fs-extra");
-const path = require("path");
-const tar = require("tar");
-const { connectDb } = require("./db");
+import { useMultiFileAuthState } from "@whiskeysockets/baileys";
+import fs from "fs-extra";
+import path from "path";
+import { fileURLToPath } from "url";
+import tar from "tar";
+import { connectDb } from "./db.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const AUTH_DIR = "./auth_info";
-const STORE_FILE = "./auth_info/store.json";  
-const AUTH_TAR = "auth_backup.tar"; 
+const AUTH_TAR = "auth_backup.tar";
+const KEYS_DIR = path.join(AUTH_DIR, "keys");
+const CREDS_PATH = path.join(AUTH_DIR, "creds.json");
 
-async function useMongoAuthState() {
+/**
+ * MongoDB-backed authentication state for Baileys
+ * Stores session data (creds.json + keys/) as a tar archive in MongoDB
+ */
+export async function useMongoAuthState() {
     const db = await connectDb();
     const coll = db.collection("auth");
 
-    // Ensure local directories exist
+    // Ensure auth directory exists
     await fs.ensureDir(AUTH_DIR);
 
-    // Restore session from MongoDB
+    // Try to restore session from MongoDB
     const session = await coll.findOne({ _id: "session" });
     const archiveBuffer = session?.archive?.buffer || session?.archive;
 
     if (archiveBuffer && Buffer.isBuffer(archiveBuffer)) {
         try {
+            // Write tar archive and extract it
             await fs.writeFile(AUTH_TAR, archiveBuffer);
-            await tar.x({ file: AUTH_TAR, C: ".", strict: true });
+            await tar.x({ 
+                file: AUTH_TAR, 
+                C: ".", 
+                strict: true 
+            });
 
-            const credsPath = path.join(AUTH_DIR, "creds.json");
-            if (await fs.pathExists(credsPath)) {
-                console.log("✅ Auth session restored successfully from MongoDB.");
-            } else {
-                console.warn("⚠️ Auth archive extracted but creds.json missing. Clearing session.");
+            // ✅ Validate critical files after extraction
+            if (!(await fs.pathExists(CREDS_PATH))) {
+                console.warn("⚠️ creds.json missing after restore. Clearing corrupted session.");
                 await coll.deleteOne({ _id: "session" });
                 await fs.emptyDir(AUTH_DIR);
-            }
-            
-            // Check if store.json was restored
-            if (await fs.pathExists(STORE_FILE)) {
-                console.log("✅ Store data restored from MongoDB.");
+            } else {
+                // ✅ Ensure keys/ directory exists and has content
+                if (!(await fs.pathExists(KEYS_DIR))) {
+                    await fs.ensureDir(KEYS_DIR);
+                    console.warn("⚠️ keys/ directory was missing — created empty. This may cause decryption failures.");
+                } else {
+                    const keyFiles = await fs.readdir(KEYS_DIR);
+                    console.log(`🔐 Restored keys/ with ${keyFiles.length} session files`);
+                }
+                console.log("✅ Auth session (creds + keys) restored from MongoDB.");
             }
         } catch (err) {
             console.error("❌ Failed to restore session from MongoDB:", err);
+            // Clear corrupted session
             await coll.deleteOne({ _id: "session" });
             await fs.emptyDir(AUTH_DIR);
-            await fs.remove(STORE_FILE).catch(() => {});
         } finally {
+            // Cleanup tar file
             await fs.remove(AUTH_TAR).catch(() => {});
         }
     } else {
-        console.log("ℹ️ No existing session found in DB. A new QR/pairing code will be generated.");
+        console.log("ℹ️ No session found in DB. New pairing required.");
     }
 
-    // Generate Baileys multi-file auth state
+    // ✅ Wait for file system operations to settle
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    // Initialize Baileys multi-file auth state
     const { state, saveCreds: originalSaveCreds } = await useMultiFileAuthState(AUTH_DIR);
 
-    // Save all auth files + store.json to MongoDB
+    // ✅ Debounced save to prevent I/O flooding
+    let saveTimer;
+    
+    /**
+     * Save credentials to MongoDB with debouncing
+     * Waits 10 seconds after last change before saving
+     */
     async function saveCreds() {
+        // Save to local files first
         await originalSaveCreds();
 
-        // Create list of files to backup
-        const filesToBackup = ["auth_info"];
-        if (await fs.pathExists(STORE_FILE)) {
-            filesToBackup.push("store.json");
+        // Debounce MongoDB save
+        if (saveTimer) {
+            clearTimeout(saveTimer);
         }
 
-        // Compress everything
-        await tar.c({ file: AUTH_TAR, cwd: ".", portable: true }, filesToBackup);
-        const data = await fs.readFile(AUTH_TAR);
+        saveTimer = setTimeout(async () => {
+            try {
+                // Create tar archive of auth_info directory
+                await tar.c(
+                    { 
+                        file: AUTH_TAR, 
+                        cwd: ".", 
+                        portable: true 
+                    },
+                    ["auth_info"]
+                );
 
-        await coll.updateOne(
-            { _id: "session" },
-            { $set: { archive: data, timestamp: new Date() } },
-            { upsert: true }
-        );
+                // Read archive as buffer
+                const data = await fs.readFile(AUTH_TAR);
 
-        await fs.remove(AUTH_TAR).catch(() => {});
-      //  console.log("💾 Session and store saved to MongoDB.");
+                // Update MongoDB with new session data
+                await coll.updateOne(
+                    { _id: "session" },
+                    { 
+                        $set: { 
+                            archive: data, 
+                            timestamp: new Date() 
+                        } 
+                    },
+                    { upsert: true }
+                );
+
+                console.log("💾 Session saved to MongoDB.");
+            } catch (err) {
+                console.error("❌ Failed to save session to MongoDB:", err);
+            } finally {
+                // Cleanup tar file
+                await fs.remove(AUTH_TAR).catch(() => {});
+            }
+        }, 10000); // Save at most every 10 seconds
     }
 
     return { state, saveCreds };
 }
 
-module.exports = { useMongoAuthState };
+/**
+ * Clear MongoDB auth session
+ * Useful for logout scenarios
+ */
+export async function clearMongoAuthState() {
+    try {
+        const db = await connectDb();
+        const coll = db.collection("auth");
+        await coll.deleteOne({ _id: "session" });
+        console.log("🗑️ MongoDB auth session cleared");
+        
+        // Also clear local files
+        await fs.emptyDir(AUTH_DIR);
+        console.log("🗑️ Local auth files cleared");
+    } catch (err) {
+        console.error("❌ Failed to clear MongoDB auth state:", err);
+        throw err;
+    }
+}
