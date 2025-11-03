@@ -47,44 +47,6 @@ A powerful, modular WhatsApp userbot built with Baileys, featuring Telegram inte
 - Reply to WhatsApp messages via Telegram
 - Media forwarding in both directions
 
-## 📊 Database Collections
-
-### Bridge Data
-```javascript
-// Chat mappings
-{
-    type: 'chat',
-    data: {
-        whatsappJid: '1234567890@s.whatsapp.net',
-        telegramTopicId: 123,
-        createdAt: Date,
-        lastActivity: Date
-    }
-}
-
-// User mappings
-{
-    type: 'user',
-    data: {
-        whatsappId: '1234567890@s.whatsapp.net',
-        name: 'John Doe',
-        phone: '1234567890',
-        firstSeen: Date,
-        messageCount: 42
-    }
-}
-
-// Contact mappings
-{
-    type: 'contact',
-    data: {
-        phone: '1234567890',
-        name: 'John Doe',
-        updatedAt: Date
-    }
-}
-```
-
 ## Available Commands
 
 ### Core Commands
