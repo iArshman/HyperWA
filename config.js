@@ -5,101 +5,87 @@ class Config {
                 name: 'HyperWa',
                 company: 'Dawium Technologies',
                 prefix: '.',
-                version: '2.0.0',
-                owner: '92300000000@s.whatsapp.net', // Include full JID
+                version: '3.0.0',
+                owner: '92307541232@s.whatsapp.net',
                 clearAuthOnStart: false
             },
 
             auth: {
-                useMongoAuth: true, // Set to false for file-based auth
+                useMongoAuth: true,
                 clearAuthOnStart: false
             },
 
             admins: [
-                '923075417411', // Just the number part, no "@s.whatsapp.net"
-                '923334445555'
+                '923/////',
+                '92333////'
             ],
 
-            // Feature toggles and options
             features: {
-                mode: 'public',                   // 'public' or 'private'
-                customModules: true,              // Enable custom modules
-                rateLimiting: true,                // Disable rate limiting for better performance
-                autoReply: false,                  // Auto reply to messages
-                autoViewStatus: false,             // Auto view status updates
-                telegramBridge: true,              // Sync with Telegram
-                respondToUnknownCommands: false,   // Respond to unknown commands
-                sendPermissionError: false         // Send error for disallowed commands
+                mode: 'private',
+                customModules: true,
+                rateLimiting: true,
+                autoReply: false,
+                autoViewStatus: false,
+                telegramBridge: true,
+                respondToUnknownCommands: false,
+                sendPermissionError: false
             },
 
             mongo: {
-                uri: 'mongodb+srv://irexaxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxexDB',
-                dbName: 'RexWA'
+                uri: 'mongodb+srv://%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%',
+                dbName: 'HyperWA'
             },
 
             telegram: {
-                enabled: true,
-                botToken: '9999999999999999999999999999',
+                enabled: false,
+                botToken: '8340169817:AAE3p5yc0%%%%%%%%%%%%%%%%%%%%%%',
                 botPassword: '1122',
-                chatId: '-++++++++++',
+                chatId: '-1002846269080',
                 logChannel: '-100000000000',
                 features: {
                     topics: true,
                     mediaSync: true,
                     profilePicSync: false,
                     callLogs: true,
-                    readReceipts: true,               // Send read receipts after sync
+                    readReceipts: false,
                     statusSync: true,
                     biDirectional: true,
-                    welcomeMessage: false,         // Message on topic creation
-                    sendOutgoingMessages: false,   // Forward messages from this side
+                    welcomeMessage: false,
+                    sendOutgoingMessages: false,
                     presenceUpdates: true,
-                    readReceipts: false,
                     animatedStickers: true
                 }
             },
-            
-            // Assistant module configuration
+
             assistant: {
-                enabled: false,                   // Enable AI assistant
-                learningMode: true,              // Allow learning new patterns
-                suggestionThreshold: 0.6         // Confidence threshold for suggestions
+                enabled: false,
+                learningMode: true,
+                suggestionThreshold: 0.6
             },
 
             help: {
-                // Default help style:
-                // 1 = Box style (╔══ module ══)
-                // 2 = Divider style (██▓▒░ module)
                 defaultStyle: 1,
-
-                // Default display mode for commands:
-                // "description" = show command descriptions
-                // "usage" = show usage string
-                // "none" = show only command names
                 defaultShow: 'description'
             },
 
             logging: {
-                level: 'info',        // Log level: info, warn, error, debug
-                saveToFile: true,     // Write logs to file
-                maxFileSize: '10MB',  // Max size per log file
-                maxFiles: 5           // Max number of rotated files
-            },
-            
-            // Store configuration for enhanced features
-            store: {
-                filePath: './whatsapp-store.json',
-                autoSaveInterval: 30000           // Save every 30 seconds
-            },
-            
-            // Security settings
-            security: {
-                blockedUsers: [],                 
-                maxFileSize: '10MB',  
-                maxFiles: 5           
+                level: 'info',
+                saveToFile: true,
+                maxFileSize: '10MB',
+                maxFiles: 5
             },
 
-            // Messages configuration
+            store: {
+                filePath: './whatsapp-store.json',
+                autoSaveInterval: 30000
+            },
+
+            security: {
+                blockedUsers: [],
+                maxFileSize: '10MB',
+                maxFiles: 5
+            },
+
             messages: {
                 autoReplyText: 'Hello! This is an automated response. I\'ll get back to you soon.',
                 welcomeText: 'Welcome to the group!',
@@ -137,4 +123,5 @@ class Config {
     }
 }
 
-module.exports = new Config();
+const config = new Config();
+export default config;
