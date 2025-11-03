@@ -1,4 +1,4 @@
-FROM node:18-alpine
+FROM node:22-alpine
 
 # Install build dependencies for node-canvas, ffmpeg, and other native modules
 RUN apk add --no-cache \
