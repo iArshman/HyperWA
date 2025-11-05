@@ -6,6 +6,7 @@ import makeWASocket, {
     getAggregateVotesInPollMessage, 
     isJidNewsletter, 
     delay, 
+    isPnUser,
     proto 
 } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode-terminal';
@@ -32,26 +33,27 @@ class HyperWaBot {
         this.qrCodeSent = false;
         this.useMongoAuth = config.get('auth.useMongoAuth', false);
         this.isFirstConnection = true;
-        // Initialize the enhanced store with advanced options
+        // Initialize the  store
         this.store = makeInMemoryStore({
-            logger: logger.child({ module: 'store' }),
-            filePath: config.get('store.filePath', './whatsapp-store.json'),
-            autoSaveInterval: config.get('store.autoSaveInterval', 30000)
-        });
+        logger: logger.child({ module: 'store' }),
+        filePath: './whatsapp-store.json',
+        autoSaveInterval: 30000
+    });
+    
+    // Load existing data
+    this.store.loadFromFile();
+    
+    // cache setup
+    this.msgRetryCounterCache = new NodeCache();
+    this.onDemandMap = new Map();
+    
+    // Memory cleanup
+    setInterval(() => {
+        if (this.onDemandMap.size > 100) {
+            this.onDemandMap.clear();
+        }
+    }, 300000); // 5 minutes
 
-        // Load existing store data on startup
-        this.store.loadFromFile();
-        
-        // Enhanced features from example - SIMPLE VERSION
-        this.msgRetryCounterCache = new NodeCache();
-        this.onDemandMap = new Map();
-        
-        // Simple memory cleanup
-        setInterval(() => {
-            if (this.onDemandMap.size > 100) {
-                this.onDemandMap.clear();
-            }
-        }, 300000);
 
         // Store event listeners for advanced features
         this.setupStoreEventListeners();
@@ -71,16 +73,6 @@ class HyperWaBot {
             logger.debug(`💬 Store: ${chats.length} chats cached`);
         });
 
-        // LID mapping update listener (Baileys 6.8.0+)
-        this.store.on('lid-mapping.update', (mapping) => {
-            logger.debug(`🔑 LID Mapping Update: ${Object.keys(mapping).length} mappings`);
-        });
-
-        // Log store statistics periodically
-        setInterval(() => {
-            const stats = this.getStoreStats();
-            logger.info(`📊 Store Stats - Chats: ${stats.chats}, Contacts: ${stats.contacts}, Messages: ${stats.messages}`);
-        }, 300000); // Every 5 minutes
     }
 
     getStoreStats() {
@@ -97,7 +89,7 @@ class HyperWaBot {
     }
 
     async initialize() {
-        logger.info('🔧 Initializing HyperWa Userbot with Enhanced Store...');
+        logger.info('🔧 Initializing HyperWa Userbot');
 
         try {
             this.db = await connectDb();
@@ -128,7 +120,7 @@ class HyperWaBot {
         await this.moduleLoader.loadModules();
         await this.startWhatsApp();
 
-        logger.info('✅ HyperWa Userbot with Enhanced Store initialized successfully!');
+        logger.info('✅ HyperWa Userbot initialized successfully!');
     }
 
     async startWhatsApp() {
@@ -162,28 +154,25 @@ class HyperWaBot {
 
         try {
             this.sock = makeWASocket({
-                auth: {
-                    creds: state.creds,
-                    keys: makeCacheableSignalKeyStore(state.keys, logger.child({ module: 'signal-keys' })),
-                },
-                version,
-                printQRInTerminal: false,
-                logger: logger.child({ module: 'baileys' }),
-                msgRetryCounterCache: this.msgRetryCounterCache,
-                generateHighQualityLinkPreview: true,
-                getMessage: this.getMessage.bind(this),
-                browser: ['HyperWa', 'Chrome', '3.0'],
-                // Enable message history for better message retrieval
-                syncFullHistory: false,
-                markOnlineOnConnect: false,
-                // Add firewall bypass
-                firewall: false
-            });
+        auth: {
+            creds: state.creds,
+            keys: makeCacheableSignalKeyStore(state.keys, logger.child({ module: 'keys' })),
+        },
+        version,
+        logger: logger.child({ module: 'baileys' }),
+        msgRetryCounterCache: this.msgRetryCounterCache,
+        generateHighQualityLinkPreview: true,
+        getMessage: this.getMessage.bind(this), 
+        browser: ['HyperWa', 'Chrome', '3.0'],
+        markOnlineOnConnect: false ,
+        syncFullHistory: true,
+        firewall: true,
+        printQRInTerminal: false
+    });
 
-            // CRITICAL: Bind store to socket events for data persistence
-            this.store.bind(this.sock.ev);
-            logger.info('🔗 Store bound to WhatsApp socket events');
-
+    // ✅ CRITICAL: Bind store to socket events
+    this.store.bind(this.sock.ev);
+    logger.info('🔗 Store bound to socket');
             const connectionPromise = new Promise((resolve, reject) => {
                 const connectionTimeout = setTimeout(() => {
                     if (!this.sock.user) {
@@ -214,192 +203,30 @@ class HyperWaBot {
 
     // Enhanced getMessage with store lookup
     async getMessage(key) {
-        try {
-            // Try to get message from store first
-            if (key?.remoteJid && key?.id) {
-                const storedMessage = this.store.loadMessage(key.remoteJid, key.id);
-                if (storedMessage) {
-                    logger.debug(`📨 Retrieved message from store: ${key.id}`);
-                    return storedMessage;
-                }
-            }
-            
-            // Return undefined instead of fake message to avoid decryption issues
-            return undefined;
-        } catch (error) {
-            logger.warn('⚠️ Error retrieving message:', error.message);
+    try {
+        if (!key?.remoteJid || !key?.id) {
             return undefined;
         }
-    }
 
-    // Store-powered helper methods
-    
-    /**
-     * Get chat information from store
-     */
-    getChatInfo(jid) {
-        return this.store.chats[jid] || null;
-    }
-
-    /**
-     * Get contact information from store (LID-compatible)
-     */
-    getContactInfo(jid) {
-        const contact = this.store.contacts[jid];
-        if (!contact && this.sock?.signalRepository?.lidMapping) {
-            // Try to find by LID or PN
-            const lid = this.sock.signalRepository.lidMapping.getLIDForPN(jid);
-            if (lid) {
-                return this.store.contacts[lid] || null;
-            }
-        }
-        return contact || null;
-    }
-
-    /**
-     * Get LID for phone number JID
-     */
-    getLIDForJID(jid) {
-        if (!this.sock?.signalRepository?.lidMapping) return null;
-        return this.sock.signalRepository.lidMapping.getLIDForPN(jid);
-    }
-
-    /**
-     * Get PN (phone number) for LID
-     */
-    getPNForLID(lid) {
-        if (!this.sock?.signalRepository?.lidMapping) return null;
-        return this.sock.signalRepository.lidMapping.getPNForLID(lid);
-    }
-
-    /**
-     * Resolve JID (works with both LID and PN)
-     */
-    resolveJID(jid) {
-        // Return the preferred ID format
-        const contact = this.getContactInfo(jid);
-        return contact?.id || jid;
-    }
-
-    /**
-     * Get all messages for a chat
-     */
-    getChatMessages(jid, limit = 50) {
-        const messages = this.store.getMessages(jid);
-        return messages.slice(-limit).reverse(); // Get latest messages
-    }
-
-    /**
-     * Search messages by text content
-     */
-    searchMessages(query, jid = null) {
-        const results = [];
-        const chatsToSearch = jid ? [jid] : Object.keys(this.store.messages);
-        
-        for (const chatId of chatsToSearch) {
-            const messages = this.store.getMessages(chatId);
-            for (const msg of messages) {
-                const text = msg.message?.conversation || 
-                           msg.message?.extendedTextMessage?.text || '';
-                if (text.toLowerCase().includes(query.toLowerCase())) {
-                    results.push({
-                        chatId,
-                        message: msg,
-                        text
-                    });
-                }
-            }
-        }
-        
-        return results.slice(0, 100); // Limit results
-    }
-
-    /**
-     * Get group metadata with participant info
-     */
-    getGroupInfo(jid) {
-        const metadata = this.store.groupMetadata[jid];
-        const chat = this.store.chats[jid];
-        return {
-            metadata,
-            chat,
-            participants: metadata?.participants || []
-        };
-    }
-
-    /**
-     * Get user's message history statistics (LID-compatible)
-     */
-    getUserStats(jid) {
-        let messageCount = 0;
-        let lastMessageTime = null;
-        
-        // Get both LID and PN for the user
-        const lid = this.getLIDForJID(jid);
-        const pn = this.getPNForLID(jid);
-        const jidsToCheck = [jid, lid, pn].filter(Boolean);
-        
-        for (const chatId of Object.keys(this.store.messages)) {
-            const messages = this.store.getMessages(chatId);
-            const userMessages = messages.filter(msg => 
-                jidsToCheck.includes(msg.key?.participant) || 
-                jidsToCheck.includes(msg.key?.remoteJid) ||
-                jidsToCheck.includes(msg.key?.participantAlt) ||
-                jidsToCheck.includes(msg.key?.remoteJidAlt)
-            );
-            
-            messageCount += userMessages.length;
-            
-            if (userMessages.length > 0) {
-                const lastMsg = userMessages[userMessages.length - 1];
-                const msgTime = lastMsg.messageTimestamp * 1000;
-                if (!lastMessageTime || msgTime > lastMessageTime) {
-                    lastMessageTime = msgTime;
-                }
-            }
-        }
-        
-        return {
-            messageCount,
-            lastMessageTime: lastMessageTime ? new Date(lastMessageTime) : null,
-            isActive: lastMessageTime && (Date.now() - lastMessageTime) < (7 * 24 * 60 * 60 * 1000) // Active in last 7 days
-        };
-    }
-
-    /**
-     * Export chat history
-     */
-    async exportChatHistory(jid, format = 'json') {
-        const chat = this.getChatInfo(jid);
-        const messages = this.getChatMessages(jid, 1000); // Last 1000 messages
-        const contact = this.getContactInfo(jid);
-        
-        const exportData = {
-            chat,
-            contact,
-            messages,
-            exportedAt: new Date().toISOString(),
-            totalMessages: messages.length
-        };
-
-        if (format === 'txt') {
-            let textExport = `Chat Export for ${contact?.name || jid}\n`;
-            textExport += `Exported on: ${new Date().toISOString()}\n`;
-            textExport += `Total Messages: ${messages.length}\n\n`;
-            textExport += '='.repeat(50) + '\n\n';
-            
-            for (const msg of messages) {
-                const timestamp = new Date(msg.messageTimestamp * 1000).toLocaleString();
-                const sender = msg.key.fromMe ? 'You' : (contact?.name || msg.key.participant || 'Unknown');
-                const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '[Media/Other]';
-                textExport += `[${timestamp}] ${sender}: ${text}\n`;
-            }
-            
-            return textExport;
+        // ✅ Try to get from store first
+        const storedMessage = this.store.loadMessage(key.remoteJid, key.id);
+        if (storedMessage?.message) {
+            logger.debug(`📨 Retrieved from store: ${key.id}`);
+            return storedMessage.message;
         }
 
-        return exportData;
+        // ✅ Return undefined (Baileys will handle retry)
+        // Never return fake messages - causes decryption issues
+        return undefined;
+        
+    } catch (error) {
+        logger.debug('⚠️ getMessage error:', error.message);
+        return undefined;
     }
+}
+
+
+
 
     setupEnhancedEventHandlers(saveCreds) {
         this.sock.ev.process(async (events) => {
