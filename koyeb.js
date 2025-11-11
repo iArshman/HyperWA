@@ -8,14 +8,13 @@ const PORT = process.env.PORT || 8000;
 let REAL_URL = null;
 let BOT_HEALTHY = false;
 
-// Guess from env first
-
+// Use env first
 if (process.env.KOYEB_PUBLIC_URL) REAL_URL = process.env.KOYEB_PUBLIC_URL;
 
-// Log helper
-const log = (...msg) => console.log("[KeepAlive ADV]", ...msg);
+// Disable all logging
+const log = () => {};
 
-//  Learn REAL public URL from proxy headers (Koyeb )
+// Learn REAL public URL from proxy headers
 app.use((req, res, next) => {
     const proto = req.headers["x-forwarded-proto"];
     const host = req.headers["x-forwarded-host"] || req.headers.host;
@@ -24,14 +23,13 @@ app.use((req, res, next) => {
         const newURL = `${proto}://${host}`;
         if (REAL_URL !== newURL) {
             REAL_URL = newURL;
-            log(" Learned domain:", REAL_URL);
             restartExternalPinger();
         }
     }
     next();
 });
 
-//  UI
+// UI
 app.get("/", (req, res) => {
     const up = process.uptime();
     const h = Math.floor(up / 3600);
@@ -93,7 +91,6 @@ app.get("/", (req, res) => {
         .init { background: #ffb300; }
     </style>
 
-    <!-- Auto-refresh every 10 seconds -->
     <meta http-equiv="refresh" content="10">
 </head>
 
@@ -117,7 +114,6 @@ app.get("/", (req, res) => {
     </div>
 </body>
 </html>
-
     `);
 });
 
@@ -132,7 +128,7 @@ app.get("/health", (req, res) => {
     });
 });
 
-//  Whoami debug
+// Whoami
 app.get("/whoami", (req, res) => {
     res.json({
         detected_url: REAL_URL,
@@ -144,27 +140,27 @@ app.get("/whoami", (req, res) => {
     });
 });
 
-//  Bot status endpoint
+// Bot status
 app.post("/bot-status", (req, res) => {
     BOT_HEALTHY = req.body?.healthy !== false;
     res.json({ ok: true });
 });
 
-//  Local ping (keeps Node active)
+// Local ping
 let localTimer = null;
+
 function startLocalPinger() {
     if (localTimer) clearInterval(localTimer);
 
     const localURL = `http://127.0.0.1:${PORT}/health`;
-    log("Local pinger ->", localURL);
 
     localTimer = setInterval(() => {
         http.get(localURL, res => res.resume());
-    }, 120000); // every 2 min
+    }, 120000);
 }
 startLocalPinger();
 
-//  External pinger (only after REAL_URL learned)
+// External pinger
 let externalTimer = null;
 
 function restartExternalPinger() {
@@ -174,32 +170,15 @@ function restartExternalPinger() {
     const url = REAL_URL + "/health";
     const isHttps = REAL_URL.startsWith("https");
     const proto = isHttps ? https : http;
-
-    log("External pinger ->", url);
-
-    externalTimer = setInterval(async () => {
-        try {
-            const time = new Date().toISOString();
-            log(`PING → ${url} @ ${time}`);
-
-            proto.get(url, res => {
-                res.on("data", () => {});
-                res.on("end", () => {
-                    if (res.statusCode === 200) {
-                        log(" External ping OK");
-                    } else {
-                        log("⚠️ Non-200 status:", res.statusCode);
-                    }
-                });
-            }).on("error", () => {
-                log("❌ External ping failed");
-            });
-
-        } catch {}
-    }, 240000); // every 4 minutes
+    
+    externalTimer = setInterval(() => {
+        proto.get(url, res => {
+            res.resume();
+        }).on("error", () => {});
+    }, 240000);
 }
 
-// Domain verification (HEAD request) every 10 min
+// Domain verification
 setInterval(() => {
     if (!REAL_URL) return;
 
@@ -207,22 +186,17 @@ setInterval(() => {
     const proto = REAL_URL.startsWith("https") ? https : http;
 
     proto.request(checkURL, { method: "HEAD", timeout: 3000 }, (res) => {
-        if (res.statusCode === 200) log("Domain verified:", REAL_URL);
-        else log(" Domain check returned:", res.statusCode);
-    }).on("error", () => {
-        log("❌ Domain failed. Waiting for new whoami header...");
-    }).end();
+        res.resume();
+    }).on("error", () => {}).end();
 
-}, 600000); // every 10 minutes
+}, 600000);
 
-//  Start server
+// Server start
 const server = app.listen(PORT, "0.0.0.0", () => {
-    log(`Server running on ${PORT}`);
-    log(`Initial URL: ${REAL_URL || "none"}`);
     if (REAL_URL) restartExternalPinger();
 });
 
-//  Safe exit
+// Safe exit
 process.on("SIGTERM", () => server.close(() => process.exit(0)));
 process.on("SIGINT", () => server.close(() => process.exit(0)));
 
