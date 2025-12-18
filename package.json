@@ -40,7 +40,6 @@
     "qrcode": "^1.5.1",
     "dotenv": "^17.2.1",
     "cheerio": "^1.1.2",
-    "canvas": "^3.1.2",
     "chalk": "^5.6.2",
     "@google/generative-ai": "^0.24.1"
   },
