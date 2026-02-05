@@ -11,12 +11,13 @@
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "7.0.0-rc.6",
+    "@whiskeysockets/baileys": "7.0.0-rc.9",
     "@hapi/boom": "^10.0.1",
     "@google/genai": "^1.22.0",
     "@cacheable/node-cache": "^1.7.3",
     "axios": "^1.6.2",
     "node-telegram-bot-api": "^0.64.0",
+    "express": "^5.2.1",
     "pino": "^8.17.2",
     "node-cache": "^5.1.2",
     "pino-pretty": "^10.3.1",
