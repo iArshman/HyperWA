@@ -36,7 +36,7 @@ class Config {
 
             mongo: {
                 uri: process.env.MONGO_URI || 'mongodb+srv://%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%',
-                dbName: 'HyperWA'
+                dbName: process.env.MONGO_DB_NAME || 'HyperWA'
             },
 
             telegram: {
