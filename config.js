@@ -1,3 +1,6 @@
+import dotenv from 'dotenv';
+dotenv.config();
+
 class Config {
     constructor() {
         this.defaultConfig = {
@@ -6,7 +9,7 @@ class Config {
                 company: 'Dawium Technologies',
                 prefix: '.',
                 version: '3.0.0',
-                owner: '92307541232@s.whatsapp.net',
+                owner: process.env.OWNER_NUMBER || '92307541232@s.whatsapp.net',
                 clearAuthOnStart: false
             },
 
@@ -32,15 +35,15 @@ class Config {
             },
 
             mongo: {
-                uri: 'mongodb+srv://%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%',
+                uri: process.env.MONGO_URI || 'mongodb+srv://%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%',
                 dbName: 'HyperWA'
             },
 
             telegram: {
                 enabled: false,
-                botToken: '8340169817:AAE3p5yc0%%%%%%%%%%%%%%%%%%%%%%',
+                botToken: process.env.BOT_TOKEN || '8340169817:AAE3p5yc0%%%%%%%%%%%%%%%%%%%%%%',
                 botPassword: '1122',
-                chatId: '-1002846269080',
+                chatId: process.env.TELEGRAM_GROUP_ID || '-1002846269080',
                 logChannel: '-100000000000',
                 features: {
                     topics: true,
@@ -99,7 +102,7 @@ class Config {
 
     load() {
         this.config = { ...this.defaultConfig };
-        console.log('✅ Configuration loaded');
+        console.log('✅ Configuration loaded (ENV supported)');
     }
 
     get(key) {
