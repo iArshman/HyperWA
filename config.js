@@ -40,7 +40,7 @@ class Config {
             },
 
             telegram: {
-                enabled: false,
+                enabled: process.env.TELEGRAM_ENABLED || 'false',
                 botToken: process.env.BOT_TOKEN || '8340169817:AAE3p5yc0%%%%%%%%%%%%%%%%%%%%%%',
                 botPassword: '1122',
                 chatId: process.env.TELEGRAM_GROUP_ID || '-1002846269080',
