@@ -23,29 +23,15 @@ class Config {
                 '92333////'
             ],
 
-            telegram: {
-                enabled: true,
-                botToken: '8433721xxxxxxxxxxnZzdtr-TkQ',
-                botPassword: '1122',
-                chatId: '-100382xxxx',
-                logChannel: '-100000000000',
-                features: {
-                    topics: true,
-                    mediaSync: true,
-                    profilePicSync: false,
-                    syncPrivate: true,     // Toggle individual chats
-                    syncGroups: false,      // Toggle group chats
-                    syncNewsletters: false, // Toggle WhatsApp Channels
-                    callLogs: true,
-                    readReceipts: false,
-                    statusSync: false,
-                    biDirectional: true,
-                    welcomeMessage: false,
-                    sendOutgoingMessages: false,
-                    onlinePresence: false,   // Show "online" (available) when replying
-                    typingPresence: true,   // Show "typing…" (composing) when replying
-                    animatedStickers: true
-                }
+            features: {
+                mode: 'private',
+                customModules: true,
+                rateLimiting: true,
+                autoReply: false,
+                autoViewStatus: false,
+                telegramBridge: true,
+                respondToUnknownCommands: false,
+                sendPermissionError: false
             },
 
             mongo: {
@@ -63,13 +49,17 @@ class Config {
                     topics: true,
                     mediaSync: true,
                     profilePicSync: false,
+                    syncPrivate: true,     // Toggle individual chats
+                    syncGroups: false,      // Toggle group chats
+                    syncNewsletters: false, // Toggle WhatsApp Channels
                     callLogs: true,
                     readReceipts: false,
-                    statusSync: true,
+                    statusSync: false,
                     biDirectional: true,
                     welcomeMessage: false,
                     sendOutgoingMessages: false,
-                    presenceUpdates: true,
+                    onlinePresence: false,   // Show "online" (available) when replying
+                    typingPresence: true,   // Show "typing…" (composing) when replying
                     animatedStickers: true
                 }
             },
