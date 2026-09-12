@@ -10,8 +10,8 @@ class DownloaderModule {
         };
 
         // API endpoints
-        this.delirusApi = 'https://delirius-apiofc.vercel.app/download';
-        this.spotifyApi = 'https://api.nekorinn.my.id/downloader/spotify';
+        this.delirusApi = 'https://api2.arshman.me/download';
+        this.spotifyApi = 'hhttps://api2.arshman.me/downloader/spotify';
 
         this.commands = [
             // Social Media Downloads
