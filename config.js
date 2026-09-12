@@ -64,11 +64,21 @@ class Config {
                 }
             },
 
-            assistant: {
-                enabled: false,
-                learningMode: true,
-                suggestionThreshold: 0.6
+            gemini: {
+                // Comma-separated list, e.g. GEMINI_API_KEYS=key1,key2,key3 in your .env
+                // When one key hits its quota/rate limit, the module automatically
+                // rotates to the next key in this list.
+                apiKeys: process.env.GEMINI_API_KEYS
+                    ? process.env.GEMINI_API_KEYS.split(',').map(k => k.trim()).filter(Boolean)
+                    : [
+                        // Fallback defaults (move these to .env as GEMINI_API_KEYS instead of
+                        // committing real keys here).
+                        "AQ.Ab8RN6KYBqj7oZQ7cmq4wRF__pJb2sqN6oBQk53iysUy91FPIg",
+                        "AQ.Ab8RN6L2K_O_dSTmdwKAF7ErRh4RPPNaVeK32Ycrouks2DFJMw"
+                      ],
+                model: process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite-preview'
             },
+            
 
             help: {
                 defaultStyle: 1,
